@@ -9,7 +9,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
-	"sshd/sshs"
+	"sshd/server"
 
 	"golang.org/x/crypto/ed25519"
 	"golang.org/x/crypto/ssh"
@@ -81,7 +81,7 @@ func main() {
 	config.AddHostKey(signer) // 添加主机密钥
 
 	// 3. 创建 SSHServer 实例
-	server := &sshs.SSHServer{
+	server := &server.SSHServer{
 		Port: 2200, // 监听端口，可以修改
 		//Address:      "0.0.0.0", // 监听地址，0.0.0.0 表示监听所有网卡
 		Server:       config,

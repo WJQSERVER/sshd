@@ -1,0 +1,9 @@
+[server]
+host = ""
+port = 22
+cert = "ed25519" # ed25519/rsa
+
+[auth]
+user = ""
+password = ""
+
