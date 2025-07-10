@@ -29,16 +29,17 @@ type SSHServer struct {
 	Port         int
 	Address      string
 	Server       *ssh.ServerConfig
-	HostKey      []byte
+	// HostKey      []byte // Removed as it's unused; ServerConfig holds the host keys
 	EnableSftp   bool
 	ReadOnlySftp bool
 }
 
 func (s *SSHServer) Start() {
 	// 配置好 ServerConfig 后，可以接受连接。
-	listener, err := net.Listen("tcp", ":"+strconv.Itoa(s.Port))
+	listenAddr := fmt.Sprintf("%s:%d", s.Address, s.Port)
+	listener, err := net.Listen("tcp", listenAddr)
 	if err != nil {
-		log.Fatalf("无法监听端口 %d: %v", s.Port, err) // 错误信息更详细
+		log.Fatalf("无法监听地址 %s: %v", listenAddr, err) // 错误信息更详细
 		return                                   // 启动失败直接返回，避免后续 panic
 	}
 	defer listener.Close() // 确保 listener 关闭
@@ -86,7 +87,7 @@ func (s *SSHServer) handleConn(tcpConn net.Conn) error {
 	// 处理传入的全局请求 (例如 keep-alive)
 	go s.handleGlobalRequests(reqs) // 将全局请求处理提取到单独的函数
 	// 接受所有通道请求 (例如 session, sftp)
-	go s.handleChannels(chans)
+	go s.handleChannels(sshConn, chans) // Pass sshConn here
 
 	// 等待连接关闭，或者可以添加超时机制
 	sshConn.Wait()
@@ -123,7 +124,9 @@ func PtyRun(c *exec.Cmd, tty *os.File) (err error) {
 	return nil
 }
 
-func (s *SSHServer) handleChannels(chans <-chan ssh.NewChannel) {
+func (s *SSHServer) handleChannels(sshConn *ssh.ServerConn, chans <-chan ssh.NewChannel) { // Added sshConn parameter
+	currentUser := sshConn.User() // Get user for this connection
+
 	// 处理传入的 Channel 通道。
 	for newChannel := range chans {
 		// 通道有一个类型，取决于预期的应用层协议。
@@ -143,7 +146,22 @@ func (s *SSHServer) handleChannels(chans <-chan ssh.NewChannel) {
 			continue
 		}
 
-		// 为此通道分配一个终端
+		userHomeBaseDir := "./user_homes"
+		userHomePath := filepath.Join(userHomeBaseDir, currentUser)
+
+		// Create user home directory if it doesn't exist
+		if _, errStat := os.Stat(userHomePath); os.IsNotExist(errStat) {
+			log.Printf("为用户 '%s' 创建家目录: %s", currentUser, userHomePath)
+			if errMkdir := os.MkdirAll(userHomePath, 0750); errMkdir != nil { // rwx r-x ---
+				log.Printf("为用户 '%s' 创建家目录 '%s' 失败: %v", currentUser, userHomePath, errMkdir)
+				// Log and continue, shell/sftp will operate from process CWD or fail if CWD change is critical.
+			}
+		} else if errStat != nil {
+			log.Printf("检查用户 '%s' 家目录 '%s' 失败: %v", currentUser, userHomePath, errStat)
+			// Log and continue
+		}
+
+
 		log.Print("创建 pty...")
 		// 创建新的 pty
 		f, tty, err := pty.Open()
@@ -160,13 +178,13 @@ func (s *SSHServer) handleChannels(chans <-chan ssh.NewChannel) {
 		}
 
 		// 会话有带外请求，例如 "shell"、"pty-req" 和 "env"
-		go func(in <-chan *ssh.Request) {
+		go func(in <-chan *ssh.Request, userSpecificHome string, requestingUser string) { // Pass userHomePath and user
 			defer func() {
 				// 确保 channel 和 pty 相关的文件描述符在会话结束时关闭
 				channel.Close()
 				tty.Close() // 确保 tty 也关闭
 				f.Close()   // 确保 f 也关闭
-				log.Printf("会话通道已关闭")
+				log.Printf("会话通道已关闭 (%s)", requestingUser)
 			}()
 			defer func() { // 捕获 request 处理中的 panic
 				if r := recover(); r != nil {
@@ -180,8 +198,9 @@ func (s *SSHServer) handleChannels(chans <-chan ssh.NewChannel) {
 				case "exec":
 					ok = true
 					command := string(req.Payload[4:])
-					log.Printf("执行命令: %s", command)
+					log.Printf("用户 '%s' 在目录 '%s' 执行命令: %s", requestingUser, userSpecificHome, command)
 					cmd := exec.Command(shell, "-c", command) // 修复参数传递问题，使用 "-c" 执行命令
+					cmd.Dir = userSpecificHome // Set working directory for the command
 
 					cmd.Stdout = channel
 					cmd.Stderr = channel
@@ -189,7 +208,7 @@ func (s *SSHServer) handleChannels(chans <-chan ssh.NewChannel) {
 
 					err := cmd.Start()
 					if err != nil {
-						log.Printf("无法启动命令: %v", err)
+						log.Printf("无法启动命令 '%s' (用户: %s, 目录: %s): %v", command, requestingUser, userSpecificHome, err)
 						continue // 继续处理其他请求，或者考虑关闭 channel
 					}
 					// 拆除会话
@@ -202,11 +221,13 @@ func (s *SSHServer) handleChannels(chans <-chan ssh.NewChannel) {
 						log.Printf("命令执行完成, 会话准备关闭")
 					}()
 				case "shell":
+					log.Printf("用户 '%s' 在目录 '%s' 启动 shell: %s", requestingUser, userSpecificHome, shell)
 					cmd := exec.Command(shell)
-					cmd.Env = []string{"TERM=xterm"}
+					cmd.Dir = userSpecificHome // Set working directory for the shell
+					cmd.Env = []string{"TERM=xterm", "HOME=" + userSpecificHome} // Set HOME environment variable
 					err := PtyRun(cmd, tty)
 					if err != nil {
-						log.Printf("启动 pty shell 失败: %v", err)
+						log.Printf("启动 pty shell '%s' 失败 (用户: %s, 目录: %s): %v", shell, requestingUser, userSpecificHome, err)
 						continue // 继续处理其他请求，或者考虑关闭 channel
 					}
 
@@ -259,55 +280,78 @@ func (s *SSHServer) handleChannels(chans <-chan ssh.NewChannel) {
 					if subsystemName == "sftp" {
 						if s.EnableSftp {
 							ok = true
-							go s.startSftp(channel)
+							// Pass userSpecificHome to startSftp
+							go s.startSftp(channel, userSpecificHome, requestingUser)
 						} else {
-							log.Printf("SFTP 子系统被禁用")
+							log.Printf("SFTP 子系统被禁用 (用户: %s)", requestingUser)
 						}
 					} else {
-						log.Printf("未知的子系统: %s", subsystemName)
+						log.Printf("未知的子系统请求 '%s' (用户: %s)", subsystemName, requestingUser)
 					}
 				}
 
-				if !ok && req.WantReply { // 只有当需要回复时才拒绝
-					log.Printf("拒绝 %s 请求", req.Type)
-					req.Reply(ok, nil) // 回复 false 表示拒绝
-				} else if ok && req.WantReply {
-					req.Reply(ok, nil) // 回复 true 表示接受
+				if req.WantReply {
+					if !ok {
+						log.Printf("拒绝类型为 '%s' 的请求 (用户: %s)", req.Type, requestingUser)
+					}
+					req.Reply(ok, nil)
 				}
 			}
-		}(requests)
+		}(requests, userHomePath, currentUser) // Pass userHomePath and currentUser
 	}
 }
 
-func (s *SSHServer) startSftp(channel ssh.Channel) {
-	log.Print("启动 SFTP 子系统")
+func (s *SSHServer) startSftp(channel ssh.Channel, userHome string, requestingUser string) { // Added userHome and requestingUser
+	log.Printf("为用户 '%s' 启动 SFTP 子系统。建议的家目录: '%s'", requestingUser, userHome)
+	log.Printf("注意: 当前 SFTP 实现未 chroot 用户到家目录。操作将相对于 SSHD 进程的当前工作目录进行。用户需要手动导航到 '%s'。", userHome)
+
+
+	// Ensure userHome directory exists (it should have been created by handleChannels)
+	if _, err := os.Stat(userHome); os.IsNotExist(err) {
+		log.Printf("SFTP: 用户 '%s' 的家目录 '%s' 不存在。这可能导致 SFTP 操作问题。", requestingUser, userHome)
+		// We could attempt to create it here again, but it's better handled centrally.
+	}
+
+
 	serverOptions := []sftp.ServerOption{
-		// sftp.WithDebug(os.Stderr), // 可以开启 SFTP 调试日志
+		// sftp.WithDebug(os.Stderr), //  Enable SFTP debugging output
 	}
 
 	if s.ReadOnlySftp {
 		serverOptions = append(serverOptions, sftp.ReadOnly())
-		log.Print("SFTP 服务器以只读模式运行")
+		log.Printf("SFTP 服务器为用户 '%s' 以只读模式运行", requestingUser)
 	} else {
-		log.Print("SFTP 服务器以读写模式运行")
+		log.Printf("SFTP 服务器为用户 '%s' 以读写模式运行", requestingUser)
 	}
 
+	// Create a new SFTP server for this channel.
+	// By default, it serves files from the current working directory of the SSHD process.
+	// Implementing a true chroot per user with pkg/sftp requires custom sftp.Handlers.
 	server, err := sftp.NewServer(
 		channel,
 		serverOptions...,
 	)
 	if err != nil {
-		log.Printf("启动 SFTP 服务器失败: %v", err)
-		return // 启动失败直接返回
+		log.Printf("为用户 '%s' 启动 SFTP 服务器失败: %v", requestingUser, err)
+		return
 	}
-	if err := server.Serve(); err == io.EOF {
-		log.Print("SFTP 客户端退出会话。")
-		server.Close()
-	} else if err != nil {
-		log.Printf("SFTP 服务器运行出错: %v", err)
-		server.Close()
+
+	log.Printf("SFTP server started for user %s. Client needs to 'cd %s' or use absolute paths from process CWD.", requestingUser, userHome)
+
+	if err := server.Serve(); err != nil {
+		if errors.Is(err, io.EOF) {
+			log.Printf("SFTP 客户端 (用户: '%s') 退出会话。", requestingUser)
+		} else {
+			log.Printf("SFTP 服务器 (用户: '%s') 运行出错: %v", requestingUser, err)
+		}
+	} else {
+		log.Printf("SFTP 会话 (用户: '%s') 正常结束。", requestingUser)
 	}
-	log.Print("SFTP 子系统已关闭")
+	// server.Close() is typically handled by Serve() returning or if an error occurs before Serve()
+	// but it's good practice if Serve() might not clean up fully on all paths.
+	// However, sftp.Server.Serve() blocks until client disconnects or error.
+	// Closing the channel (which happens in the calling goroutine's defer) should signal the server.
+	log.Printf("SFTP 子系统 (用户: '%s') 已关闭", requestingUser)
 }
 
 // parseDims 从提供的缓冲区提取两个 uint32，表示窗口宽度和高度。

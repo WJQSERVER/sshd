@@ -1,9 +1,10 @@
 [server]
-host = ""
-port = 22
-cert = "ed25519" # ed25519/rsa
+host = "0.0.0.0" # Listen on all interfaces
+port = 2200
+cert = "ed25519" # ed25519 or rsa
+sftp_enabled = true
+sftp_readonly = false
 
 [auth]
-user = ""
-password = ""
-
+user = "testuser"
+password = "testpass" # Please change this in a production environment!

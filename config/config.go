@@ -25,9 +25,11 @@ type Config struct {
 }
 
 type ServerConfig struct {
-	Host string `toml:"host"`
-	Port int    `toml:"port"`
-	Cert string `toml:"cert"`
+	Host         string `toml:"host"`
+	Port         int    `toml:"port"`
+	Cert         string `toml:"cert"`
+	SftpEnabled  bool   `toml:"sftp_enabled"`
+	SftpReadonly bool   `toml:"sftp_readonly"`
 }
 
 type AuthConfig struct {

@@ -9,6 +9,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"sshd/config" // Import the config package
 	"sshd/server"
 
 	"golang.org/x/crypto/ed25519"
@@ -16,8 +17,9 @@ import (
 )
 
 const (
-	defaultHostKeyFileRSA     = "host_rsa.key"     // RSA 主机密钥文件路径
-	defaultHostKeyFileEd25519 = "host_ed25519.key" // Ed25519 主机密钥文件路径
+	defaultHostKeyFileRSA     = "host_rsa.key"
+	defaultHostKeyFileEd25519 = "host_ed25519.key"
+	configFilePath            = "config/config.toml"
 )
 
 // EncryptionType 定义支持的加密类型
@@ -29,12 +31,16 @@ const (
 )
 
 func main() {
-	// 设置优先使用的加密类型
-	encryptionType := Ed25519Encryption // 优先使用 Ed25519，可以修改为 RSAEncryption
+	// 1. Load configuration
+	cfg, err := config.LoadConfig(configFilePath)
+	if err != nil {
+		log.Fatalf("无法加载配置文件 '%s': %v", configFilePath, err)
+	}
 
+	// 2. Determine encryption type and load/create host key
 	var privateKey interface{}
-	var err error
 	var hostKeyFile string
+	encryptionType := EncryptionType(cfg.Server.Cert)
 
 	switch encryptionType {
 	case Ed25519Encryption:
@@ -44,14 +50,14 @@ func main() {
 		hostKeyFile = defaultHostKeyFileRSA
 		privateKey, err = loadOrCreateHostKeyRSA(hostKeyFile)
 	default:
-		log.Fatalf("不支持的加密类型: %s", encryptionType)
+		log.Fatalf("配置文件中不支持的加密类型: %s", encryptionType)
 	}
 
 	if err != nil {
 		log.Fatalf("加载或创建主机密钥失败: %v", err)
 	}
 
-	// 创建 signer (用于 ssh.ServerConfig)
+	// 3. Create signer for ssh.ServerConfig
 	var signer ssh.Signer
 	switch pk := privateKey.(type) {
 	case *rsa.PrivateKey:
@@ -65,50 +71,87 @@ func main() {
 		log.Fatalf("创建 signer 失败: %v", err)
 	}
 
-	// 2. 配置 ssh.ServerConfig
-	config := &ssh.ServerConfig{
+	// 4. Configure ssh.ServerConfig
+	sshCfg := &ssh.ServerConfig{
 		PasswordCallback: func(conn ssh.ConnMetadata, password []byte) (*ssh.Permissions, error) {
-			// 简单的密码认证示例 (请勿在生产环境中使用硬编码密码!)
-			if conn.User() == "root" && string(password) == "test" {
+			if conn.User() == cfg.Auth.User && string(password) == cfg.Auth.Password {
 				log.Printf("用户 '%s' 密码认证成功", conn.User())
-				return nil, nil // 认证成功
+				return nil, nil // Success
 			}
 			log.Printf("用户 '%s' 密码认证失败", conn.User())
-			return nil, fmt.Errorf("密码错误") // 认证失败
+			return nil, fmt.Errorf("密码错误") // Failure
 		},
-		// 可以添加 PublicKeyCallback 来支持公钥认证
-	}
-	config.AddHostKey(signer) // 添加主机密钥
-
-	// 3. 创建 SSHServer 实例
-	server := &server.SSHServer{
-		Port: 2200, // 监听端口，可以修改
-		//Address:      "0.0.0.0", // 监听地址，0.0.0.0 表示监听所有网卡
-		Server:       config,
-		EnableSftp:   true,  // 启用 SFTP
-		ReadOnlySftp: false, // SFTP 读写权限
-
-	}
-
-	// 将主机密钥存储到 Server 实例中
-	switch encryptionType {
-	case RSAEncryption:
-		if pk, ok := privateKey.(*rsa.PrivateKey); ok {
-			server.HostKey = pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(pk)})
-		}
-	case Ed25519Encryption:
-		if pk, ok := privateKey.(ed25519.PrivateKey); ok {
-			privateKeySSH, err := ssh.NewSignerFromKey(pk)
-			if err != nil {
-				log.Fatalf("创建 SSH 私钥失败: %v", err)
+		PublicKeyCallback: func(conn ssh.ConnMetadata, key ssh.PublicKey) (*ssh.Permissions, error) {
+			// Define the path to the authorized_keys file
+			// For simplicity, using a fixed base directory. This could be made configurable.
+			authKeysDir := "./authorized_keys_store"
+			// Ensure the base directory for authorized keys exists
+			if _, err := os.Stat(authKeysDir); os.IsNotExist(err) {
+				log.Printf("创建 authorized_keys 存储目录: %s", authKeysDir)
+				if err := os.MkdirAll(authKeysDir, 0700); err != nil { // Read/Write/Execute for owner only
+					log.Printf("创建 authorized_keys 存储目录 '%s' 失败: %v", authKeysDir, err)
+					return nil, fmt.Errorf("无法创建 authorized_keys 存储目录")
+				}
 			}
-			server.HostKey = ssh.MarshalAuthorizedKey(privateKeySSH.PublicKey())
-		}
+
+			userAuthKeysFile := filepath.Join(authKeysDir, conn.User(), "authorized_keys")
+
+			// Log the attempt
+			log.Printf("用户 '%s' 尝试使用公钥类型 '%s' 进行认证 (来源: %s)", conn.User(), key.Type(), userAuthKeysFile)
+
+			// Read the authorized_keys file
+			authorizedKeysBytes, err := os.ReadFile(userAuthKeysFile)
+			if err != nil {
+				if os.IsNotExist(err) {
+					log.Printf("用户的 authorized_keys 文件 '%s' 未找到", userAuthKeysFile)
+					return nil, fmt.Errorf("authorized_keys 文件未找到")
+				}
+				log.Printf("读取 authorized_keys 文件 '%s' 失败: %v", userAuthKeysFile, err)
+				return nil, fmt.Errorf("无法读取 authorized_keys 文件")
+			}
+
+			// Parse the authorized keys
+			var authorizedKeys []ssh.PublicKey
+			for len(authorizedKeysBytes) > 0 {
+				pubKey, _, _, rest, err := ssh.ParseAuthorizedKey(authorizedKeysBytes)
+				if err != nil {
+					log.Printf("解析 authorized_keys 文件 '%s' 中的密钥失败: %v", userAuthKeysFile, err)
+					// Potentially skip this key and continue, or fail hard.
+					// For now, let's be strict.
+					return nil, fmt.Errorf("无法解析 authorized_keys 文件中的密钥")
+				}
+				authorizedKeys = append(authorizedKeys, pubKey)
+				authorizedKeysBytes = rest
+			}
+
+			// Check if the provided public key is in the list of authorized keys
+			for _, authorizedKey := range authorizedKeys {
+				if ssh.KeysEqual(key, authorizedKey) {
+					log.Printf("用户 '%s' 公钥认证成功", conn.User())
+					return nil, nil // Success
+				}
+			}
+
+			log.Printf("用户 '%s' 公钥认证失败: 提供的密钥不在 authorized_keys 文件中", conn.User())
+			return nil, fmt.Errorf("公钥认证失败")
+		},
+	}
+	sshCfg.AddHostKey(signer)
+
+	// 5. Create SSHServer instance
+	appServer := &server.SSHServer{
+		Port:         cfg.Server.Port,
+		Address:      cfg.Server.Host,
+		Server:       sshCfg,
+		EnableSftp:   cfg.Server.SftpEnabled,
+		ReadOnlySftp: cfg.Server.SftpReadonly,
+		// HostKey field removed from server.SSHServer as it was unused.
+		// The ssh.ServerConfig (appServer.Server) already contains the host keys via AddHostKey().
 	}
 
-	// 4. 启动服务器
-	log.Println("SSH 服务器启动...")
-	server.Start()
+	// 6. Start the server
+	log.Printf("SSH 服务器启动中，监听地址 %s:%d...", appServer.Address, appServer.Port)
+	appServer.Start()
 }
 
 // loadOrCreateHostKeyRSA 加载或创建 RSA 主机密钥
