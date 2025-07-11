@@ -32,7 +32,7 @@ type SSHServer struct {
 	// HostKey      []byte // Removed as it's unused; ServerConfig holds the host keys
 	EnableSftp       bool
 	ReadOnlySftp     bool
-	UserHomesBaseDir string // Configurable base directory for user homes
+	// UserHomesBaseDir string // Removed: System user homes are now used directly
 }
 
 func (s *SSHServer) Start() {
@@ -125,49 +125,55 @@ func PtyRun(c *exec.Cmd, tty *os.File) (err error) {
 	return nil
 }
 
-func (s *SSHServer) handleChannels(sshConn *ssh.ServerConn, chans <-chan ssh.NewChannel) { // Added sshConn parameter
-	currentUser := sshConn.User() // Get user for this connection
+func (s *SSHServer) handleChannels(sshConn *ssh.ServerConn, chans <-chan ssh.NewChannel) {
+	// Get system user details stored during authentication
+	perms := sshConn.Permissions()
+	sysUserHome := perms.Extensions["systemUserHome"]
+	sysUserUID := perms.Extensions["systemUserUID"] // Will be used for impersonation later
+	sysUserGID := perms.Extensions["systemUserGID"] // Will be used for impersonation later
+	sysUsername := perms.Extensions["systemUsername"]
+
+	if sysUserHome == "" {
+		log.Printf("错误: 系统用户 '%s' 的主目录信息未在权限中找到。拒绝会话。", sshConn.User())
+		// It's unlikely to reach here if auth succeeded and set these, but good to check.
+		// We cannot proceed without a home directory for the user.
+		// For loop below will handle rejecting channels if this state is reached.
+	}
+	if sysUsername == "" { // If username is missing, use the one from connection
+		sysUsername = sshConn.User()
+	}
+
+	log.Printf("为系统用户 '%s' (UID: %s, GID: %s, Home: %s) 处理通道请求", sysUsername, sysUserUID, sysUserGID, sysUserHome)
 
 	// 处理传入的 Channel 通道。
 	for newChannel := range chans {
-		// 通道有一个类型，取决于预期的应用层协议。
-		// 在 shell 的情况下，类型是 "session"，可以使用 ServerShell 提供简单的终端接口。
+		if sysUserHome == "" { // Check again inside loop for safety before processing each channel
+			log.Printf("拒绝通道请求，因为用户 '%s' 的主目录未知。", sysUsername)
+			newChannel.Reject(ssh.ResourceShortage, "用户主目录信息不可用")
+			continue
+		}
+
 		if t := newChannel.ChannelType(); t != "session" {
 			err := newChannel.Reject(ssh.UnknownChannelType, fmt.Sprintf("未知通道类型: %s", t))
 			if err != nil {
 				log.Printf("拒绝未知通道类型失败: %v", err)
 				continue
 			}
-			log.Printf("拒绝未知通道类型: %s", t) // 添加日志
+			log.Printf("拒绝未知通道类型: %s (用户: %s)", t, sysUsername)
 			continue
 		}
 		channel, requests, err := newChannel.Accept()
 		if err != nil {
-			log.Printf("无法接受通道: %v", err)
+			log.Printf("无法接受通道 (用户: %s): %v", sysUsername, err)
 			continue
 		}
 
-		currentHomeBaseDir := s.UserHomesBaseDir
-		if currentHomeBaseDir == "" {
-			log.Printf("警告: UserHomesBaseDir 未在 SSHServer 实例中配置。将使用默认 './user_specific_homes'")
-			currentHomeBaseDir = "./user_specific_homes" // Fallback, should be set from config
-		}
-		userHomePath := filepath.Join(currentHomeBaseDir, currentUser)
+		// userHomePath is now sysUserHome, which is the actual system home directory.
+		// No need to create it here, as it should exist for a system user.
+		// If it doesn't exist, commands will likely fail, which is expected OS behavior.
+		userHomePath := sysUserHome
 
-		// Create user home directory if it doesn't exist
-		if _, errStat := os.Stat(userHomePath); os.IsNotExist(errStat) {
-			log.Printf("为用户 '%s' 创建家目录: %s", currentUser, userHomePath)
-			if errMkdir := os.MkdirAll(userHomePath, 0750); errMkdir != nil { // rwx r-x ---
-				log.Printf("为用户 '%s' 创建家目录 '%s' 失败: %v", currentUser, userHomePath, errMkdir)
-				// Log and continue, shell/sftp will operate from process CWD or fail if CWD change is critical.
-			}
-		} else if errStat != nil {
-			log.Printf("检查用户 '%s' 家目录 '%s' 失败: %v", currentUser, userHomePath, errStat)
-			// Log and continue
-		}
-
-
-		log.Print("创建 pty...")
+		log.Printf("为用户 '%s' 创建 pty (将使用主目录: %s)", sysUsername, userHomePath)
 		// 创建新的 pty
 		f, tty, err := pty.Open()
 		if err != nil {
@@ -189,7 +195,7 @@ func (s *SSHServer) handleChannels(sshConn *ssh.ServerConn, chans <-chan ssh.New
 				channel.Close()
 				tty.Close() // 确保 tty 也关闭
 				f.Close()   // 确保 f 也关闭
-				log.Printf("会话通道已关闭 (%s)", requestingUser)
+				log.Printf("会话通道已关闭 (用户: %s)", requestingUser) // requestingUser is passed as sysUsername
 			}()
 			defer func() { // 捕获 request 处理中的 panic
 				if r := recover(); r != nil {
@@ -302,11 +308,11 @@ func (s *SSHServer) handleChannels(sshConn *ssh.ServerConn, chans <-chan ssh.New
 					req.Reply(ok, nil)
 				}
 			}
-		}(requests, userHomePath, currentUser) // Pass userHomePath and currentUser
+		}(requests, userHomePath, sysUsername) // Pass userHomePath (which is sysUserHome) and sysUsername
 	}
 }
 
-func (s *SSHServer) startSftp(channel ssh.Channel, userHome string, requestingUser string) { // Added userHome and requestingUser
+func (s *SSHServer) startSftp(channel ssh.Channel, userHome string, requestingUser string) { // requestingUser is sysUsername
 	log.Printf("为用户 '%s' 启动 SFTP 子系统。建议的家目录: '%s'", requestingUser, userHome)
 	log.Printf("注意: 当前 SFTP 实现未 chroot 用户到家目录。操作将相对于 SSHD 进程的当前工作目录进行。用户需要手动导航到 '%s'。", userHome)
 

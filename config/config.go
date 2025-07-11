@@ -30,13 +30,13 @@ type ServerConfig struct {
 	Cert               string `toml:"cert"`
 	SftpEnabled        bool   `toml:"sftp_enabled"`
 	SftpReadonly       bool   `toml:"sftp_readonly"`
-	UserHomesBaseDir  string `toml:"user_homes_base_dir"` // Base directory for user home directories
+	// UserHomesBaseDir  string `toml:"user_homes_base_dir"` // Removed: System user homes are now used
 }
 
 type AuthConfig struct {
 	User               string `toml:"user"`
 	Password           string `toml:"password"`
-	AuthorizedKeysDir string `toml:"authorized_keys_dir"` // Directory for storing authorized_keys files
+	// AuthorizedKeysDir string `toml:"authorized_keys_dir"` // Removed: authorized_keys are now read from ~/.ssh/ of system users
 }
 
 func LoadConfig(path string) (*Config, error) {

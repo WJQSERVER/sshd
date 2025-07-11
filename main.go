@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"sshd/config" // Import the config package
 	"sshd/server"
+	"sshd/system" // Import the system package
 
 	"golang.org/x/crypto/ed25519"
 	"golang.org/x/crypto/ssh"
@@ -75,48 +76,61 @@ func main() {
 	// 4. Configure ssh.ServerConfig
 	sshCfg := &ssh.ServerConfig{
 		PasswordCallback: func(conn ssh.ConnMetadata, password []byte) (*ssh.Permissions, error) {
-			if conn.User() == cfg.Auth.User && string(password) == cfg.Auth.Password {
-				log.Printf("用户 '%s' 密码认证成功", conn.User())
-				return nil, nil // Success
+			// System user lookup
+			sysUser, err := system.LookupUser(conn.User())
+			if err != nil {
+				log.Printf("密码认证失败: 系统用户 '%s' 未找到. %v", conn.User(), err)
+				return nil, fmt.Errorf("密码认证失败: 用户不存在或系统错误")
 			}
-			log.Printf("用户 '%s' 密码认证失败", conn.User())
-			return nil, fmt.Errorf("密码错误") // Failure
+			log.Printf("密码认证尝试: 系统用户 '%s' (UID: %s) 存在, 主目录: %s", sysUser.Username, sysUser.UID, sysUser.HomeDir)
+
+			// TODO: Replace this with PAM or other system-level password verification.
+			// For now, we'll keep the config-based password check for the configured user
+			// to allow at least one login method during transition if PAM isn't ready.
+			// This is a temporary measure.
+			if conn.User() == cfg.Auth.User && string(password) == cfg.Auth.Password {
+				log.Printf("用户 '%s' (系统用户 '%s') 通过配置文件密码认证成功", conn.User(), sysUser.Username)
+				// In a real scenario with PAM, permissions might include more details or be nil for default.
+				// We can store sysUser info in ssh.Permissions.Extensions for later use if needed.
+				return &ssh.Permissions{
+					Extensions: map[string]string{
+						"systemUserHome": sysUser.HomeDir,
+						"systemUserUID":  sysUser.UID,
+						"systemUserGID":  sysUser.GID,
+						"systemUsername": sysUser.Username,
+					},
+				}, nil
+			}
+
+			// If not the configured user, or password doesn't match (for the configured user)
+			log.Printf("用户 '%s' (系统用户 '%s') 密码认证失败", conn.User(), sysUser.Username)
+			return nil, fmt.Errorf("密码错误")
 		},
 		PublicKeyCallback: func(conn ssh.ConnMetadata, key ssh.PublicKey) (*ssh.Permissions, error) {
-			// Use the configured authorized keys directory
-			authKeysBaseDir := cfg.Auth.AuthorizedKeysDir
-			if authKeysBaseDir == "" {
-				// Fallback or error if not set, though LoadConfig should provide defaults or TOML does.
-				// For robustness, let's ensure it's not empty, or log a warning and use a default.
-				// However, TOML parsing usually populates with zero-values if field is missing and no default specified in struct tag.
-				// Let's assume LoadConfig ensures cfg.Auth.AuthorizedKeysDir has a value (e.g. from toml default).
-				// If it can be truly empty, we should handle that. For now, assume it's populated.
-				log.Printf("警告: authorized_keys_dir 未在配置中设置，将使用默认 './auth_keys_data'")
-				authKeysBaseDir = "./auth_keys_data" // Default fallback if empty after load
+			// System user lookup (also needed here to get home dir for authorized_keys)
+			sysUser, err := system.LookupUser(conn.User())
+			if err != nil {
+				log.Printf("公钥认证失败: 系统用户 '%s' 未找到. %v", conn.User(), err)
+				return nil, fmt.Errorf("公钥认证失败: 用户不存在或系统错误")
 			}
+			log.Printf("公钥认证尝试: 系统用户 '%s' (UID: %s) 存在, 主目录: %s", sysUser.Username, sysUser.UID, sysUser.HomeDir)
 
-			// Ensure the base directory for authorized keys exists
-			if _, err := os.Stat(authKeysBaseDir); os.IsNotExist(err) {
-				log.Printf("创建 authorized_keys 存储目录: %s", authKeysBaseDir)
-				if err := os.MkdirAll(authKeysBaseDir, 0700); err != nil { // Read/Write/Execute for owner only
-					log.Printf("创建 authorized_keys 存储目录 '%s' 失败: %v", authKeysBaseDir, err)
-					return nil, fmt.Errorf("无法创建 authorized_keys 存储目录")
-				}
+			// Construct path to user's authorized_keys file in their system home directory
+			if sysUser.HomeDir == "" {
+				log.Printf("公钥认证失败: 系统用户 '%s' 的主目录未设置或无法访问", sysUser.Username)
+				return nil, fmt.Errorf("用户主目录未设置或无法访问")
 			}
+			userAuthKeysFile := filepath.Join(sysUser.HomeDir, ".ssh", "authorized_keys")
 
-			userAuthKeysFile := filepath.Join(authKeysBaseDir, conn.User(), "authorized_keys")
+			log.Printf("尝试从系统用户 '%s' 的 '%s' 读取公钥", sysUser.Username, userAuthKeysFile)
 
-			// Log the attempt
-			log.Printf("用户 '%s' 尝试使用公钥类型 '%s' 进行认证 (来源: %s)", conn.User(), key.Type(), userAuthKeysFile)
-
-			// Read the authorized_keys file
 			authorizedKeysBytes, err := os.ReadFile(userAuthKeysFile)
 			if err != nil {
 				if os.IsNotExist(err) {
-					log.Printf("用户的 authorized_keys 文件 '%s' 未找到", userAuthKeysFile)
-					return nil, fmt.Errorf("authorized_keys 文件未找到")
+					log.Printf("公钥认证失败: authorized_keys 文件 '%s' 未找到", userAuthKeysFile)
+					return nil, fmt.Errorf("authorized_keys 文件未找到或无权访问")
 				}
-				log.Printf("读取 authorized_keys 文件 '%s' 失败: %v", userAuthKeysFile, err)
+				log.Printf("公钥认证失败: 读取 authorized_keys 文件 '%s' 失败: %v", userAuthKeysFile, err)
 				return nil, fmt.Errorf("无法读取 authorized_keys 文件")
 			}
 
@@ -138,12 +152,19 @@ func main() {
 			for _, authorizedKey := range authorizedKeys {
 				// Compare marshaled public key bytes
 				if bytes.Equal(key.Marshal(), authorizedKey.Marshal()) {
-					log.Printf("用户 '%s' 公钥认证成功 (类型: %s)", conn.User(), key.Type())
-					return nil, nil // Success
+					log.Printf("用户 '%s' (系统用户 '%s') 公钥认证成功 (类型: %s)", conn.User(), sysUser.Username, key.Type())
+					return &ssh.Permissions{
+						Extensions: map[string]string{
+							"systemUserHome": sysUser.HomeDir,
+							"systemUserUID":  sysUser.UID,
+							"systemUserGID":  sysUser.GID,
+							"systemUsername": sysUser.Username,
+						},
+					}, nil // Success
 				}
 			}
 
-			log.Printf("用户 '%s' 公钥认证失败: 提供的密钥不在 authorized_keys 文件中", conn.User())
+			log.Printf("用户 '%s' (系统用户 '%s') 公钥认证失败: 提供的密钥不在 authorized_keys 文件中", conn.User(), sysUser.Username)
 			return nil, fmt.Errorf("公钥认证失败")
 		},
 	}
