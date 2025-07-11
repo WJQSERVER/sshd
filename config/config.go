@@ -1,19 +1,6 @@
 package config
 
-/*
-[server]
-host = ""
-port = 22
-cert = "ed25519" # ed25519/rsa
-
-[auth]
-user = ""
-password = ""
-
-*/
-
 import (
-	"fmt"
 	"os"
 
 	"github.com/BurntSushi/toml"
@@ -48,16 +35,77 @@ type Config struct {
 	AuthSettings AuthSettingsConfig `toml:"auth_settings"` // 认证行为配置节
 }
 
-// LoadConfig 从指定路径加载配置文件
-func LoadConfig(path string) (*Config, error) {
-	_, err := os.Stat(path)
-	if err != nil {
-		return nil, fmt.Errorf("config file not found: %v", err)
+// LoadConfig 从 TOML 配置文件加载配置
+func LoadConfig(filePath string) (*Config, error) {
+	if !FileExists(filePath) {
+		// 楔入配置文件
+		err := DefaultConfig().WriteConfig(filePath)
+		if err != nil {
+			return nil, err
+		}
+		return DefaultConfig(), nil
 	}
+
 	var config Config
-	_, err = toml.DecodeFile(path, &config)
-	if err != nil {
-		return nil, fmt.Errorf("config file decode error: %v", err)
+	if _, err := toml.DecodeFile(filePath, &config); err != nil {
+		return nil, err
 	}
 	return &config, nil
+}
+
+// 写入配置文件
+func (c *Config) WriteConfig(filePath string) error {
+	file, err := os.Create(filePath)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+
+	encoder := toml.NewEncoder(file)
+	return encoder.Encode(c)
+}
+
+// 检测文件是否存在
+func FileExists(filename string) bool {
+	_, err := os.Stat(filename)
+	return !os.IsNotExist(err)
+}
+
+// 默认配置
+/*
+[server]
+host = "0.0.0.0" # Listen on all interfaces
+port = 2200
+cert = "ed25519" # ed25519 or rsa
+sftp_enabled = true
+sftp_readonly = false
+
+[auth] # This section is mostly for legacy/fallback if system auth fails or for a non-system bootstrap user.
+user = "testuser" # This user/password is now only for temporary fallback during transition to PAM
+password = "testpass" # Please change this in a production environment!
+
+[auth_settings]
+password_authentication = true # Enable/disable password authentication via /etc/shadow
+pubkey_authentication = true   # Enable/disable public key authentication
+permit_root_login = "prohibit-password" # Options: "yes", "no", "prohibit-password"
+
+*/
+func DefaultConfig() *Config {
+	return &Config{
+		Server: ServerConfig{
+			Host:        "0.0.0.0",
+			Port:        2200,
+			Cert:        "ed25519",
+			SftpEnabled: true,
+		},
+		Auth: AuthConfig{
+			User:     "testuser",
+			Password: "testpass",
+		},
+		AuthSettings: AuthSettingsConfig{
+			PasswordAuthentication: true,
+			PubkeyAuthentication:   true,
+			PermitRootLogin:        "prohibit-password",
+		},
+	}
 }
