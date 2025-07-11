@@ -127,7 +127,17 @@ func PtyRun(c *exec.Cmd, tty *os.File) (err error) {
 
 func (s *SSHServer) handleChannels(sshConn *ssh.ServerConn, chans <-chan ssh.NewChannel) {
 	// Get system user details stored during authentication
-	perms := sshConn.Permissions()
+	perms := sshConn.Permissions // Corrected: Permissions is a field, not a method
+	if perms == nil {
+		// This case should ideally not be reached if authentication was successful
+		// and permissions were set.
+		log.Printf("错误: 用户 '%s' 的权限信息为空。拒绝会话。", sshConn.User())
+		// Reject all incoming channels on this connection
+		for newChannel := range chans {
+			newChannel.Reject(ssh.ResourceShortage, "权限信息不可用")
+		}
+		return
+	}
 	sysUserHome := perms.Extensions["systemUserHome"]
 	sysUserUID := perms.Extensions["systemUserUID"] // Will be used for impersonation later
 	sysUserGID := perms.Extensions["systemUserGID"] // Will be used for impersonation later
