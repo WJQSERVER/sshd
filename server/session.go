@@ -73,10 +73,13 @@ func (s *SSHServer) handleChannel(sshConn *ssh.ServerConn, newChannel ssh.NewCha
 				return
 			}
 		case "subsystem":
-			if s.config.Server.SftpEnabled && string(req.Payload[4:]) == "sftp" {
+			if session.server.config.Server.SftpEnabled && string(req.Payload[4:]) == "sftp" {
 				ok = true
-				session.handleSftp()
-				return
+				homeDir, sysUsername, _, _, st := session.getUserInfo()
+				if !st {
+					return
+				}
+				go session.server.startSftp(session.channel, homeDir, sysUsername)
 			}
 		case "pty-req":
 			ok = session.handlePtyReq(req)
