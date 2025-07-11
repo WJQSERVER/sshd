@@ -2,6 +2,7 @@ package config
 
 import (
 	"os"
+	"time"
 
 	"github.com/BurntSushi/toml"
 )
@@ -28,11 +29,21 @@ type AuthConfig struct {
 	Password string `toml:"password"` // 密码 (其作用已减弱)
 }
 
+// Fail2BanConfig 定义 Fail2Ban 中间件的配置
+type Fail2BanConfig struct {
+	Enabled     bool          `toml:"enabled"`      // 是否启用 Fail2Ban
+	MaxAttempts int           `toml:"max_attempts"` // 最大尝试次数
+	FindTime    time.Duration `toml:"find_time"`    // 查找时间窗口 (例如 "10m", "1h")
+	BanTime     time.Duration `toml:"ban_time"`     // 封禁时长 (例如 "30m", "24h")
+	Whitelist   []string      `toml:"whitelist"`    // IP白名单 (CIDR格式, 例如 "192.168.1.0/24")
+}
+
 // Config 是所有配置项的根结构体
 type Config struct {
 	Server       ServerConfig       `toml:"server"`        // 服务器配置节
 	Auth         AuthConfig         `toml:"auth"`          // 认证配置节 (旧)
 	AuthSettings AuthSettingsConfig `toml:"auth_settings"` // 认证行为配置节
+	Fail2Ban     Fail2BanConfig     `toml:"fail2ban"`      // Fail2Ban 配置节
 }
 
 // LoadConfig 从 TOML 配置文件加载配置
@@ -106,6 +117,13 @@ func DefaultConfig() *Config {
 			PasswordAuthentication: true,
 			PubkeyAuthentication:   true,
 			PermitRootLogin:        "prohibit-password",
+		},
+		Fail2Ban: Fail2BanConfig{
+			Enabled:     true, // 默认启用
+			MaxAttempts: 5,
+			FindTime:    10 * time.Minute,
+			BanTime:     30 * time.Minute,
+			Whitelist:   []string{"127.0.0.1/32", "::1/128"}, // 默认只白名单本机
 		},
 	}
 }
