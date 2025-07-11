@@ -38,6 +38,7 @@ func init() {
 }
 
 func main() {
+
 	// 将加载好的配置对象 cfg 传递给 server.NewServer 构造函数.
 	// 所有复杂的初始化逻辑, 如加载/生成主机密钥、创建认证回调等,
 	// 都已完全封装在 server 包的 NewServer 函数内部.
