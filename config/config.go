@@ -19,10 +19,7 @@ import (
 	"github.com/BurntSushi/toml"
 )
 
-type Config struct {
-	Server ServerConfig `toml:"server"`
-	Auth   AuthConfig   `toml:"auth"`
-}
+// Removed duplicate Config struct definition. The correct one is below.
 
 type ServerConfig struct {
 	Host               string `toml:"host"`

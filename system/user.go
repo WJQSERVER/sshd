@@ -175,28 +175,29 @@ func parseShadowLine(line string) (*ShadowEntry, error) {
 // from /etc/shadow (which includes the algorithm, salt, and hash).
 // It uses github.com/go-crypt/crypt to verify various crypt(3) style hashes.
 func VerifyPassword(plainPassword, shadowHash string) (bool, error) {
-	// crypt.Verify attempts to decode the hash, identify the algorithm, and verify.
-	err := crypt.Verify(shadowHash, []byte(plainPassword))
+	// First, create a new Crypter from the existing hash string.
+	// This step decodes the hash string to determine the algorithm and parameters.
+	crypter, err := crypt.New(shadowHash)
+	if err != nil {
+		// This error occurs if the hash format is not recognized or is malformed.
+		// It could wrap algorithm.ErrAlgorithmInvalid or algorithm.ErrAlgorithmUnavailable.
+		if errors.Is(err, algorithm.ErrAlgorithmInvalid) || errors.Is(err, algorithm.ErrAlgorithmUnavailable) {
+			return false, fmt.Errorf("unsupported or malformed hash algorithm in '%s': %w", shadowHash, err)
+		}
+		return false, fmt.Errorf("failed to create crypter for hash '%s': %w", shadowHash, err)
+	}
 
+	// Now, verify the plain password against the parsed hash.
+	err = crypter.Verify([]byte(plainPassword))
 	if err == nil {
 		return true, nil // Password matches
 	}
 
-	// Check if the error is a password mismatch error.
-	// The go-crypt library uses specific error types for this.
-	// For example, algorithm.ErrPasswordMismatch or a similar sentinel error.
-	// We need to consult its documentation for the exact error to check.
-	// Assuming algorithm.ErrPasswordMismatch is the one.
+	// Check if the error is specifically a password mismatch.
 	if errors.Is(err, algorithm.ErrPasswordMismatch) {
 		return false, nil // Password does not match
 	}
 
-	// Check if the error indicates an unknown or unsupported algorithm.
-	// The library might return algorithm.ErrAlgorithmInvalid or algorithm.ErrAlgorithmUnavailable.
-	if errors.Is(err, algorithm.ErrAlgorithmInvalid) || errors.Is(err, algorithm.ErrAlgorithmUnavailable) {
-		return false, fmt.Errorf("unsupported or malformed hash algorithm in '%s': %w", shadowHash, err)
-	}
-
-	// Any other error is an unexpected issue during verification.
-	return false, fmt.Errorf("password verification failed for hash '%s': %w", shadowHash, err)
+	// Any other error is an unexpected issue during the verification step itself.
+	return false, fmt.Errorf("password verification process failed for hash '%s': %w", shadowHash, err)
 }
