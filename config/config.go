@@ -33,10 +33,23 @@ type ServerConfig struct {
 	// UserHomesBaseDir  string `toml:"user_homes_base_dir"` // Removed: System user homes are now used
 }
 
+// AuthSettingsConfig holds sshd-like authentication settings
+type AuthSettingsConfig struct {
+	PasswordAuthentication bool   `toml:"password_authentication"`
+	PubkeyAuthentication   bool   `toml:"pubkey_authentication"`
+	PermitRootLogin        string `toml:"permit_root_login"` // e.g., "yes", "no", "prohibit-password"
+}
+
 type AuthConfig struct {
-	User               string `toml:"user"`
-	Password           string `toml:"password"`
-	// AuthorizedKeysDir string `toml:"authorized_keys_dir"` // Removed: authorized_keys are now read from ~/.ssh/ of system users
+	User     string `toml:"user"`     // Kept for now, but its role is diminished (only for initial non-system fallback if any)
+	Password string `toml:"password"` // Kept for now, but its role is diminished
+	// AuthorizedKeysDir string `toml:"authorized_keys_dir"` // Removed
+}
+
+type Config struct {
+	Server       ServerConfig       `toml:"server"`
+	Auth         AuthConfig         `toml:"auth"`
+	AuthSettings AuthSettingsConfig `toml:"auth_settings"` // New section for auth behavior
 }
 
 func LoadConfig(path string) (*Config, error) {

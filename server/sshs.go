@@ -10,10 +10,12 @@ import (
 	"os"
 	"os/exec"
 	"runtime/debug"
-	// "strconv" // No longer used
+	"strconv" // Now used for ParseUint
 	"sync"
 	"syscall"
 	"unsafe"
+
+	"os/user" // For LookupId and GroupIds for supplementary groups
 
 	"github.com/creack/pty"
 	"github.com/pkg/sftp"
@@ -199,7 +201,7 @@ func (s *SSHServer) handleChannels(sshConn *ssh.ServerConn, chans <-chan ssh.New
 		}
 
 		// 会话有带外请求，例如 "shell"、"pty-req" 和 "env"
-		go func(in <-chan *ssh.Request, userSpecificHome string, requestingUser string) { // Pass userHomePath and user
+		go func(in <-chan *ssh.Request, userSpecificHome string, requestingUser string, uidStr string, gidStr string) { // Pass UID and GID strings
 			defer func() {
 				// 确保 channel 和 pty 相关的文件描述符在会话结束时关闭
 				channel.Close()
@@ -220,8 +222,50 @@ func (s *SSHServer) handleChannels(sshConn *ssh.ServerConn, chans <-chan ssh.New
 					ok = true
 					command := string(req.Payload[4:])
 					log.Printf("用户 '%s' 在目录 '%s' 执行命令: %s", requestingUser, userSpecificHome, command)
-					cmd := exec.Command(shell, "-c", command) // 修复参数传递问题，使用 "-c" 执行命令
-					cmd.Dir = userSpecificHome // Set working directory for the command
+					cmd := exec.Command(shell, "-c", command)
+					cmd.Dir = userSpecificHome
+
+					// Attempt to set user credentials for the command
+					uid, errUid := strconv.ParseUint(uidStr, 10, 32) // Use passed uidStr
+					gid, errGid := strconv.ParseUint(gidStr, 10, 32) // Use passed gidStr
+
+					if errUid == nil && errGid == nil {
+						if cmd.SysProcAttr == nil {
+							cmd.SysProcAttr = &syscall.SysProcAttr{}
+						}
+						cmd.SysProcAttr.Credential = &syscall.Credential{Uid: uint32(uid), Gid: uint32(gid)}
+						log.Printf("为命令 '%s' 设置主凭据 UID=%d, GID=%d (用户: %s)", command, uint32(uid), uint32(gid), requestingUser)
+
+						// Set supplementary groups
+						u, errLookup := user.LookupId(uidStr)
+						if errLookup == nil {
+							groupIdStrings, errGroups := u.GroupIds()
+							if errGroups == nil {
+								var gidsUint32 []uint32
+								for _, gidString := range groupIdStrings {
+									gid64, errConv := strconv.ParseUint(gidString, 10, 32)
+									if errConv == nil {
+										gidsUint32 = append(gidsUint32, uint32(gid64))
+									} else {
+										log.Printf("警告: 无法转换补充组ID '%s' 为 uint32 (用户: %s): %v", gidString, requestingUser, errConv)
+									}
+								}
+								if len(gidsUint32) > 0 {
+									cmd.SysProcAttr.Gids = gidsUint32
+									log.Printf("为命令 '%s' 设置补充组IDs %v (用户: %s)", command, gidsUint32, requestingUser)
+								}
+							} else {
+								log.Printf("警告: 无法获取用户 '%s' (UID: %s) 的补充组: %v", requestingUser, uidStr, errGroups)
+							}
+						} else {
+							log.Printf("警告: 无法通过 UID '%s' 查找用户 '%s' 以获取补充组: %v", uidStr, requestingUser, errLookup)
+						}
+
+					} else {
+						log.Printf("警告: 无法解析 UID (%s) 或 GID (%s) 为用户 '%s' 执行命令 '%s'. 命令将以 SSHD 进程用户身份运行. UidErr: %v, GidErr: %v",
+							uidStr, gidStr, requestingUser, command, errUid, errGid)
+						// Fallback: command runs as the SSHD process user (root)
+					}
 
 					cmd.Stdout = channel
 					cmd.Stderr = channel
@@ -229,8 +273,9 @@ func (s *SSHServer) handleChannels(sshConn *ssh.ServerConn, chans <-chan ssh.New
 
 					err := cmd.Start()
 					if err != nil {
-						log.Printf("无法启动命令 '%s' (用户: %s, 目录: %s): %v", command, requestingUser, userSpecificHome, err)
-						continue // 继续处理其他请求，或者考虑关闭 channel
+						log.Printf("无法启动命令 '%s' (用户: %s, 目录: %s, UID: %s, GID: %s): %v",
+							command, requestingUser, userSpecificHome, uidStr, gidStr, err) // Log with uidStr, gidStr
+						continue
 					}
 					// 拆除会话
 					go func() {
@@ -244,11 +289,57 @@ func (s *SSHServer) handleChannels(sshConn *ssh.ServerConn, chans <-chan ssh.New
 				case "shell":
 					log.Printf("用户 '%s' 在目录 '%s' 启动 shell: %s", requestingUser, userSpecificHome, shell)
 					cmd := exec.Command(shell)
-					cmd.Dir = userSpecificHome // Set working directory for the shell
-					cmd.Env = []string{"TERM=xterm", "HOME=" + userSpecificHome} // Set HOME environment variable
-					err := PtyRun(cmd, tty)
+					cmd.Dir = userSpecificHome
+					cmd.Env = []string{"TERM=xterm", "HOME=" + userSpecificHome}
+
+					// Attempt to set user credentials for the shell process
+					uid, errUid := strconv.ParseUint(uidStr, 10, 32)
+					gid, errGid := strconv.ParseUint(gidStr, 10, 32)
+
+					if errUid == nil && errGid == nil {
+						// For PTY-based shells, Setctty and Setsid are also important.
+						// Ensure SysProcAttr is initialized before setting multiple fields.
+						if cmd.SysProcAttr == nil {
+							cmd.SysProcAttr = &syscall.SysProcAttr{}
+						}
+						cmd.SysProcAttr.Credential = &syscall.Credential{Uid: uint32(uid), Gid: uint32(gid)}
+						log.Printf("为 shell '%s' 设置主凭据 UID=%d, GID=%d (用户: %s)", shell, uint32(uid), uint32(gid), requestingUser)
+
+						// Set supplementary groups for shell
+						u, errLookup := user.LookupId(uidStr)
+						if errLookup == nil {
+							groupIdStrings, errGroups := u.GroupIds()
+							if errGroups == nil {
+								var gidsUint32 []uint32
+								for _, gidString := range groupIdStrings {
+									gid64, errConv := strconv.ParseUint(gidString, 10, 32)
+									if errConv == nil {
+										gidsUint32 = append(gidsUint32, uint32(gid64))
+									} else {
+										log.Printf("警告: 无法转换补充组ID '%s' 为 uint32 (用户: %s): %v", gidString, requestingUser, errConv)
+									}
+								}
+								if len(gidsUint32) > 0 {
+									cmd.SysProcAttr.Gids = gidsUint32
+									log.Printf("为 shell '%s' 设置补充组IDs %v (用户: %s)", shell, gidsUint32, requestingUser)
+								}
+							} else {
+								log.Printf("警告: 无法获取用户 '%s' (UID: %s) 的补充组: %v", requestingUser, uidStr, errGroups)
+							}
+						} else {
+							log.Printf("警告: 无法通过 UID '%s' 查找用户 '%s' 以获取补充组: %v", uidStr, requestingUser, errLookup)
+						}
+						// PtyRun handles Setctty and Setsid
+					} else {
+						log.Printf("警告: 无法解析 UID (%s) 或 GID (%s) 为用户 '%s' 启动 shell '%s'. Shell 将以 SSHD 进程用户身份运行. UidErr: %v, GidErr: %v",
+							uidStr, gidStr, requestingUser, shell, errUid, errGid)
+						// Fallback: shell runs as the SSHD process user (root)
+					}
+
+					err := PtyRun(cmd, tty) // PtyRun also sets Setctty and Setsid
 					if err != nil {
-						log.Printf("启动 pty shell '%s' 失败 (用户: %s, 目录: %s): %v", shell, requestingUser, userSpecificHome, err)
+						log.Printf("启动 pty shell '%s' 失败 (用户: %s, 目录: %s, UID: %s, GID: %s): %v",
+							shell, requestingUser, userSpecificHome, uidStr, gidStr, err)
 						continue // 继续处理其他请求，或者考虑关闭 channel
 					}
 
@@ -318,7 +409,7 @@ func (s *SSHServer) handleChannels(sshConn *ssh.ServerConn, chans <-chan ssh.New
 					req.Reply(ok, nil)
 				}
 			}
-		}(requests, userHomePath, sysUsername) // Pass userHomePath (which is sysUserHome) and sysUsername
+		}(requests, userHomePath, sysUsername, sysUserUID, sysUserGID) // Pass UID and GID
 	}
 }
 

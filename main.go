@@ -13,6 +13,8 @@ import (
 	"sshd/config" // Import the config package
 	"sshd/server"
 	"sshd/system" // Import the system package
+	"strings"     // For strings.HasPrefix
+	"time"        // For time-based shadow checks
 
 	"golang.org/x/crypto/ed25519"
 	"golang.org/x/crypto/ssh"
@@ -76,22 +78,91 @@ func main() {
 	// 4. Configure ssh.ServerConfig
 	sshCfg := &ssh.ServerConfig{
 		PasswordCallback: func(conn ssh.ConnMetadata, password []byte) (*ssh.Permissions, error) {
+			// Check if password authentication is enabled
+			if !cfg.AuthSettings.PasswordAuthentication {
+				log.Printf("密码认证被禁用 (用户: %s)", conn.User())
+				return nil, fmt.Errorf("密码认证被禁用")
+			}
+
+			username := conn.User()
+			// Check PermitRootLogin for password authentication
+			if username == "root" &&
+				(cfg.AuthSettings.PermitRootLogin == "no" || cfg.AuthSettings.PermitRootLogin == "prohibit-password") {
+				log.Printf("Root 用户通过密码登录被拒绝 (PermitRootLogin: %s)", cfg.AuthSettings.PermitRootLogin)
+				return nil, fmt.Errorf("root 用户密码登录被拒绝")
+			}
+
 			// System user lookup
-			sysUser, err := system.LookupUser(conn.User())
+			sysUser, err := system.LookupUser(username)
 			if err != nil {
 				log.Printf("密码认证失败: 系统用户 '%s' 未找到. %v", conn.User(), err)
 				return nil, fmt.Errorf("密码认证失败: 用户不存在或系统错误")
 			}
 			log.Printf("密码认证尝试: 系统用户 '%s' (UID: %s) 存在, 主目录: %s", sysUser.Username, sysUser.UID, sysUser.HomeDir)
 
-			// TODO: Replace this with PAM or other system-level password verification.
-			// For now, we'll keep the config-based password check for the configured user
-			// to allow at least one login method during transition if PAM isn't ready.
-			// This is a temporary measure.
-			if conn.User() == cfg.Auth.User && string(password) == cfg.Auth.Password {
-				log.Printf("用户 '%s' (系统用户 '%s') 通过配置文件密码认证成功", conn.User(), sysUser.Username)
-				// In a real scenario with PAM, permissions might include more details or be nil for default.
-				// We can store sysUser info in ssh.Permissions.Extensions for later use if needed.
+			// Get shadow entry for the user
+			shadowEntry, err := system.GetShadowEntryForUser(sysUser.Username)
+			if err != nil {
+				log.Printf("密码认证失败: 无法获取用户 '%s' 的 shadow 条目: %v", sysUser.Username, err)
+				return nil, fmt.Errorf("认证失败: 内部服务器错误") // Generic error for client
+			}
+
+			// Check for conditions that prevent login based on shadow entry
+			// 1. Empty password hash (user might not have a password set, or it's managed elsewhere)
+			// 2. Hash is '*' (account locked) or '!' (password not set/disabled) or '!!' (pw never set)
+			// Other prefixes like *LK* or *NP* might also exist.
+			// Standard `sshd` often treats `!` or `*` at the start of the hash as non-loginable.
+			// Empty hash field also means no password login.
+			if shadowEntry.PasswordHash == "" || strings.HasPrefix(shadowEntry.PasswordHash, "!") || strings.HasPrefix(shadowEntry.PasswordHash, "*") {
+				log.Printf("密码认证失败: 用户 '%s' 账户已锁定或无密码登录权限 (shadow hash: '%s')", sysUser.Username, shadowEntry.PasswordHash)
+				return nil, fmt.Errorf("密码认证失败: 账户锁定或无密码登录")
+			}
+
+			// Perform time-based checks for account and password expiry
+			// All calculations are based on days since epoch (Jan 1, 1970)
+			todayInDays := time.Now().Unix() / (60 * 60 * 24)
+
+			// Check account expiry
+			if shadowEntry.ExpiryDate > 0 && todayInDays > shadowEntry.ExpiryDate {
+				log.Printf("密码认证失败: 用户 '%s' 账户已于 %d 天前过期 (ExpiryDate: %d, Today: %d)",
+					sysUser.Username, todayInDays-shadowEntry.ExpiryDate, shadowEntry.ExpiryDate, todayInDays)
+				return nil, fmt.Errorf("密码认证失败: 账户已过期")
+			}
+
+			// Check password expiry (if MaxAge is set)
+			// MaxAge is days password is valid. LastChange is when it was last changed.
+			if shadowEntry.MaxAge > 0 && shadowEntry.MaxAge < 99999 { // 99999 is often used to mean "no expiry"
+				passwordExpiryDay := shadowEntry.LastChange + shadowEntry.MaxAge
+				if todayInDays > passwordExpiryDay {
+					log.Printf("密码认证失败: 用户 '%s' 的密码已于 %d 天前过期 (LastChange: %d, MaxAge: %d, ExpiryDay: %d, Today: %d)",
+						sysUser.Username, todayInDays-passwordExpiryDay, shadowEntry.LastChange, shadowEntry.MaxAge, passwordExpiryDay, todayInDays)
+					return nil, fmt.Errorf("密码认证失败: 密码已过期")
+				}
+
+				// Check warning period (log only, does not deny login)
+				if shadowEntry.WarnPeriod > 0 {
+					warnStartDate := passwordExpiryDay - shadowEntry.WarnPeriod
+					if todayInDays >= warnStartDate {
+						daysToExpiry := passwordExpiryDay - todayInDays
+						log.Printf("提醒: 用户 '%s' 的密码将在 %d 天内过期", sysUser.Username, daysToExpiry)
+						// This information could potentially be passed to the client if the SSH protocol supports it,
+						// or logged for the admin. For now, just a server log.
+					}
+				}
+			}
+			// MinAge check: If needed, one could check if `todayInDays < shadowEntry.LastChange + shadowEntry.MinAge`
+			// and prevent login if password was changed too recently. Typically not enforced at login time by sshd.
+
+			// Verify the password
+			passwordMatch, err := system.VerifyPassword(string(password), shadowEntry.PasswordHash)
+			if err != nil {
+				// This error is from system.VerifyPassword, could be unsupported hash or other internal error
+				log.Printf("密码认证错误: 用户 '%s' 密码校验时发生错误: %v", sysUser.Username, err)
+				return nil, fmt.Errorf("认证失败: 密码校验错误")
+			}
+
+			if passwordMatch {
+				log.Printf("用户 '%s' (系统用户 '%s') /etc/shadow 密码认证成功", conn.User(), sysUser.Username)
 				return &ssh.Permissions{
 					Extensions: map[string]string{
 						"systemUserHome": sysUser.HomeDir,
@@ -102,15 +173,28 @@ func main() {
 				}, nil
 			}
 
-			// If not the configured user, or password doesn't match (for the configured user)
-			log.Printf("用户 '%s' (系统用户 '%s') 密码认证失败", conn.User(), sysUser.Username)
+			log.Printf("用户 '%s' (系统用户 '%s') /etc/shadow 密码认证失败 (密码不匹配)", conn.User(), sysUser.Username)
 			return nil, fmt.Errorf("密码错误")
 		},
 		PublicKeyCallback: func(conn ssh.ConnMetadata, key ssh.PublicKey) (*ssh.Permissions, error) {
+			// Check if public key authentication is enabled
+			if !cfg.AuthSettings.PubkeyAuthentication {
+				log.Printf("公钥认证被禁用 (用户: %s)", conn.User())
+				return nil, fmt.Errorf("公钥认证被禁用")
+			}
+
+			username := conn.User()
+			// Check PermitRootLogin for public key authentication
+			if username == "root" && cfg.AuthSettings.PermitRootLogin == "no" {
+				log.Printf("Root 用户通过公钥登录被拒绝 (PermitRootLogin: no)")
+				return nil, fmt.Errorf("root 用户公钥登录被拒绝")
+			}
+			// Note: "prohibit-password" for PermitRootLogin specifically allows pubkey for root, so no check needed here for that.
+
 			// System user lookup (also needed here to get home dir for authorized_keys)
-			sysUser, err := system.LookupUser(conn.User())
+			sysUser, err := system.LookupUser(username)
 			if err != nil {
-				log.Printf("公钥认证失败: 系统用户 '%s' 未找到. %v", conn.User(), err)
+				log.Printf("公钥认证失败: 系统用户 '%s' 未找到. %v", username, err)
 				return nil, fmt.Errorf("公钥认证失败: 用户不存在或系统错误")
 			}
 			log.Printf("公钥认证尝试: 系统用户 '%s' (UID: %s) 存在, 主目录: %s", sysUser.Username, sysUser.UID, sysUser.HomeDir)

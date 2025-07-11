@@ -6,7 +6,12 @@ sftp_enabled = true
 sftp_readonly = false
 # user_homes_base_dir = "./user_specific_homes" # Removed: System user homes are now used
 
-[auth]
+[auth] # This section is mostly for legacy/fallback if system auth fails or for a non-system bootstrap user.
 user = "testuser" # This user/password is now only for temporary fallback during transition to PAM
 password = "testpass" # Please change this in a production environment!
 # authorized_keys_dir = "./auth_keys_data" # Removed: authorized_keys are now read from ~/.ssh/ of system users
+
+[auth_settings]
+password_authentication = true # Enable/disable password authentication via /etc/shadow
+pubkey_authentication = true   # Enable/disable public key authentication
+permit_root_login = "prohibit-password" # Options: "yes", "no", "prohibit-password"
