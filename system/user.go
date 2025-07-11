@@ -3,7 +3,6 @@ package system
 import (
 	"bufio"
 	"fmt"
-	"errors" // For errors.Is
 	"os"
 	"os/user"
 	"strconv"
@@ -27,12 +26,12 @@ type SystemUserInfo struct {
 type ShadowEntry struct {
 	Username       string
 	PasswordHash   string
-	LastChange     int64 // Days since Jan 1, 1970
-	MinAge         int64 // Min days between password changes
-	MaxAge         int64 // Max days before password change required
-	WarnPeriod     int64 // Days before password expiry to warn user
-	InactivePeriod int64 // Days after password expiry that account is disabled
-	ExpiryDate     int64 // Days since Jan 1, 1970 that account is disabled
+	LastChange     int64  // Days since Jan 1, 1970
+	MinAge         int64  // Min days between password changes
+	MaxAge         int64  // Max days before password change required
+	WarnPeriod     int64  // Days before password expiry to warn user
+	InactivePeriod int64  // Days after password expiry that account is disabled
+	ExpiryDate     int64  // Days since Jan 1, 1970 that account is disabled
 	Reserved       string // Reserved field
 }
 

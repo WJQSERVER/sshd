@@ -22,12 +22,11 @@ import (
 // Removed duplicate Config struct definition. The correct one is below.
 
 type ServerConfig struct {
-	Host               string `toml:"host"`
-	Port               int    `toml:"port"`
-	Cert               string `toml:"cert"`
-	SftpEnabled        bool   `toml:"sftp_enabled"`
-	SftpReadonly       bool   `toml:"sftp_readonly"`
-	// UserHomesBaseDir  string `toml:"user_homes_base_dir"` // Removed: System user homes are now used
+	Host         string `toml:"host"`
+	Port         int    `toml:"port"`
+	Cert         string `toml:"cert"`
+	SftpEnabled  bool   `toml:"sftp_enabled"`
+	SftpReadonly bool   `toml:"sftp_readonly"`
 }
 
 // AuthSettingsConfig holds sshd-like authentication settings

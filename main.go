@@ -258,9 +258,9 @@ func main() {
 	appServer := &server.SSHServer{
 		Port:         cfg.Server.Port,
 		Address:      cfg.Server.Host,
-		Server:           sshCfg,
-		EnableSftp:       cfg.Server.SftpEnabled,
-		ReadOnlySftp:     cfg.Server.SftpReadonly,
+		Server:       sshCfg,
+		EnableSftp:   cfg.Server.SftpEnabled,
+		ReadOnlySftp: cfg.Server.SftpReadonly,
 		// UserHomesBaseDir field removed from server.SSHServer struct in sshs.go
 		// HostKey field removed from server.SSHServer as it was unused.
 		// The ssh.ServerConfig (appServer.Server) already contains the host keys via AddHostKey().
