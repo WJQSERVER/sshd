@@ -4,7 +4,9 @@ port = 2200
 cert = "ed25519" # ed25519 or rsa
 sftp_enabled = true
 sftp_readonly = false
+user_homes_base_dir = "./user_specific_homes" # Base directory for user home creation
 
 [auth]
 user = "testuser"
 password = "testpass" # Please change this in a production environment!
+authorized_keys_dir = "./auth_keys_data" # Base directory for authorized keys

@@ -83,19 +83,28 @@ func main() {
 			return nil, fmt.Errorf("密码错误") // Failure
 		},
 		PublicKeyCallback: func(conn ssh.ConnMetadata, key ssh.PublicKey) (*ssh.Permissions, error) {
-			// Define the path to the authorized_keys file
-			// For simplicity, using a fixed base directory. This could be made configurable.
-			authKeysDir := "./authorized_keys_store"
+			// Use the configured authorized keys directory
+			authKeysBaseDir := cfg.Auth.AuthorizedKeysDir
+			if authKeysBaseDir == "" {
+				// Fallback or error if not set, though LoadConfig should provide defaults or TOML does.
+				// For robustness, let's ensure it's not empty, or log a warning and use a default.
+				// However, TOML parsing usually populates with zero-values if field is missing and no default specified in struct tag.
+				// Let's assume LoadConfig ensures cfg.Auth.AuthorizedKeysDir has a value (e.g. from toml default).
+				// If it can be truly empty, we should handle that. For now, assume it's populated.
+				log.Printf("警告: authorized_keys_dir 未在配置中设置，将使用默认 './auth_keys_data'")
+				authKeysBaseDir = "./auth_keys_data" // Default fallback if empty after load
+			}
+
 			// Ensure the base directory for authorized keys exists
-			if _, err := os.Stat(authKeysDir); os.IsNotExist(err) {
-				log.Printf("创建 authorized_keys 存储目录: %s", authKeysDir)
-				if err := os.MkdirAll(authKeysDir, 0700); err != nil { // Read/Write/Execute for owner only
-					log.Printf("创建 authorized_keys 存储目录 '%s' 失败: %v", authKeysDir, err)
+			if _, err := os.Stat(authKeysBaseDir); os.IsNotExist(err) {
+				log.Printf("创建 authorized_keys 存储目录: %s", authKeysBaseDir)
+				if err := os.MkdirAll(authKeysBaseDir, 0700); err != nil { // Read/Write/Execute for owner only
+					log.Printf("创建 authorized_keys 存储目录 '%s' 失败: %v", authKeysBaseDir, err)
 					return nil, fmt.Errorf("无法创建 authorized_keys 存储目录")
 				}
 			}
 
-			userAuthKeysFile := filepath.Join(authKeysDir, conn.User(), "authorized_keys")
+			userAuthKeysFile := filepath.Join(authKeysBaseDir, conn.User(), "authorized_keys")
 
 			// Log the attempt
 			log.Printf("用户 '%s' 尝试使用公钥类型 '%s' 进行认证 (来源: %s)", conn.User(), key.Type(), userAuthKeysFile)
@@ -144,9 +153,10 @@ func main() {
 	appServer := &server.SSHServer{
 		Port:         cfg.Server.Port,
 		Address:      cfg.Server.Host,
-		Server:       sshCfg,
-		EnableSftp:   cfg.Server.SftpEnabled,
-		ReadOnlySftp: cfg.Server.SftpReadonly,
+		Server:           sshCfg,
+		EnableSftp:       cfg.Server.SftpEnabled,
+		ReadOnlySftp:     cfg.Server.SftpReadonly,
+		UserHomesBaseDir: cfg.Server.UserHomesBaseDir, // Set the user homes base directory
 		// HostKey field removed from server.SSHServer as it was unused.
 		// The ssh.ServerConfig (appServer.Server) already contains the host keys via AddHostKey().
 	}

@@ -25,16 +25,18 @@ type Config struct {
 }
 
 type ServerConfig struct {
-	Host         string `toml:"host"`
-	Port         int    `toml:"port"`
-	Cert         string `toml:"cert"`
-	SftpEnabled  bool   `toml:"sftp_enabled"`
-	SftpReadonly bool   `toml:"sftp_readonly"`
+	Host               string `toml:"host"`
+	Port               int    `toml:"port"`
+	Cert               string `toml:"cert"`
+	SftpEnabled        bool   `toml:"sftp_enabled"`
+	SftpReadonly       bool   `toml:"sftp_readonly"`
+	UserHomesBaseDir  string `toml:"user_homes_base_dir"` // Base directory for user home directories
 }
 
 type AuthConfig struct {
-	User     string `toml:"user"`
-	Password string `toml:"password"`
+	User               string `toml:"user"`
+	Password           string `toml:"password"`
+	AuthorizedKeysDir string `toml:"authorized_keys_dir"` // Directory for storing authorized_keys files
 }
 
 func LoadConfig(path string) (*Config, error) {

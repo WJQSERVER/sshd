@@ -28,10 +28,11 @@ var (
 type SSHServer struct {
 	Port         int
 	Address      string
-	Server       *ssh.ServerConfig
+	Server           *ssh.ServerConfig
 	// HostKey      []byte // Removed as it's unused; ServerConfig holds the host keys
-	EnableSftp   bool
-	ReadOnlySftp bool
+	EnableSftp       bool
+	ReadOnlySftp     bool
+	UserHomesBaseDir string // Configurable base directory for user homes
 }
 
 func (s *SSHServer) Start() {
@@ -146,8 +147,12 @@ func (s *SSHServer) handleChannels(sshConn *ssh.ServerConn, chans <-chan ssh.New
 			continue
 		}
 
-		userHomeBaseDir := "./user_homes"
-		userHomePath := filepath.Join(userHomeBaseDir, currentUser)
+		currentHomeBaseDir := s.UserHomesBaseDir
+		if currentHomeBaseDir == "" {
+			log.Printf("警告: UserHomesBaseDir 未在 SSHServer 实例中配置。将使用默认 './user_specific_homes'")
+			currentHomeBaseDir = "./user_specific_homes" // Fallback, should be set from config
+		}
+		userHomePath := filepath.Join(currentHomeBaseDir, currentUser)
 
 		// Create user home directory if it doesn't exist
 		if _, errStat := os.Stat(userHomePath); os.IsNotExist(errStat) {
