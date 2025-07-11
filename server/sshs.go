@@ -9,8 +9,8 @@ import (
 	"net"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"runtime/debug"
+	"strconv"
 	"sync"
 	"syscall"
 	"unsafe"
@@ -26,9 +26,9 @@ var (
 )
 
 type SSHServer struct {
-	Port    int
-	Address string
-	Server  *ssh.ServerConfig
+	Port         int
+	Address      string
+	Server       *ssh.ServerConfig
 	// HostKey      []byte // Removed as it's unused; ServerConfig holds the host keys
 	EnableSftp   bool
 	ReadOnlySftp bool
@@ -40,7 +40,7 @@ func (s *SSHServer) Start() {
 	listener, err := net.Listen("tcp", listenAddr)
 	if err != nil {
 		log.Fatalf("无法监听地址 %s: %v", listenAddr, err) // 错误信息更详细
-		return                                       // 启动失败直接返回，避免后续 panic
+		return                                   // 启动失败直接返回，避免后续 panic
 	}
 	defer listener.Close() // 确保 listener 关闭
 
@@ -161,6 +161,7 @@ func (s *SSHServer) handleChannels(sshConn *ssh.ServerConn, chans <-chan ssh.New
 			// Log and continue
 		}
 
+
 		log.Print("创建 pty...")
 		// 创建新的 pty
 		f, tty, err := pty.Open()
@@ -199,7 +200,7 @@ func (s *SSHServer) handleChannels(sshConn *ssh.ServerConn, chans <-chan ssh.New
 					command := string(req.Payload[4:])
 					log.Printf("用户 '%s' 在目录 '%s' 执行命令: %s", requestingUser, userSpecificHome, command)
 					cmd := exec.Command(shell, "-c", command) // 修复参数传递问题，使用 "-c" 执行命令
-					cmd.Dir = userSpecificHome                // Set working directory for the command
+					cmd.Dir = userSpecificHome // Set working directory for the command
 
 					cmd.Stdout = channel
 					cmd.Stderr = channel
@@ -222,7 +223,7 @@ func (s *SSHServer) handleChannels(sshConn *ssh.ServerConn, chans <-chan ssh.New
 				case "shell":
 					log.Printf("用户 '%s' 在目录 '%s' 启动 shell: %s", requestingUser, userSpecificHome, shell)
 					cmd := exec.Command(shell)
-					cmd.Dir = userSpecificHome                                   // Set working directory for the shell
+					cmd.Dir = userSpecificHome // Set working directory for the shell
 					cmd.Env = []string{"TERM=xterm", "HOME=" + userSpecificHome} // Set HOME environment variable
 					err := PtyRun(cmd, tty)
 					if err != nil {
@@ -304,11 +305,13 @@ func (s *SSHServer) startSftp(channel ssh.Channel, userHome string, requestingUs
 	log.Printf("为用户 '%s' 启动 SFTP 子系统。建议的家目录: '%s'", requestingUser, userHome)
 	log.Printf("注意: 当前 SFTP 实现未 chroot 用户到家目录。操作将相对于 SSHD 进程的当前工作目录进行。用户需要手动导航到 '%s'。", userHome)
 
+
 	// Ensure userHome directory exists (it should have been created by handleChannels)
 	if _, err := os.Stat(userHome); os.IsNotExist(err) {
 		log.Printf("SFTP: 用户 '%s' 的家目录 '%s' 不存在。这可能导致 SFTP 操作问题。", requestingUser, userHome)
 		// We could attempt to create it here again, but it's better handled centrally.
 	}
+
 
 	serverOptions := []sftp.ServerOption{
 		// sftp.WithDebug(os.Stderr), //  Enable SFTP debugging output

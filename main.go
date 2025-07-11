@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes" // Import bytes package for key comparison
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/x509"
@@ -126,8 +127,9 @@ func main() {
 
 			// Check if the provided public key is in the list of authorized keys
 			for _, authorizedKey := range authorizedKeys {
-				if ssh.KeysEqual(key, authorizedKey) {
-					log.Printf("用户 '%s' 公钥认证成功", conn.User())
+				// Compare marshaled public key bytes
+				if bytes.Equal(key.Marshal(), authorizedKey.Marshal()) {
+					log.Printf("用户 '%s' 公钥认证成功 (类型: %s)", conn.User(), key.Type())
 					return nil, nil // Success
 				}
 			}
