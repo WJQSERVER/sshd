@@ -76,6 +76,8 @@ type Permissions struct {
 	CanExecuteCommands  bool
 	AllowedCommands     []string
 	Environment         []string
+	// SSHPAExtensions 存储需要传递给 ssh.Permissions.Extensions 的键值对
+	SSHPAExtensions      map[string]string
 }
 
 // AuthHandlerFunc 定义了核心认证逻辑的函数签名

@@ -144,12 +144,11 @@ func createPermissions(sysUser *system.SystemUserInfo) *middleware.Permissions {
 		CanExecuteCommands: true, // 默认允许执行命令
 		// AllowedCommands: []string{}, // 可以限制命令
 		// Environment: []string{fmt.Sprintf("SYSTEM_USER_HOME=%s", sysUser.HomeDir)},
-		// 可以将 ssh.Permissions 的 Extensions 映射到 middleware.Permissions 的自定义字段或一个通用 map
-		// CustomData: map[string]string{
-		// 	"systemUserHome": sysUser.HomeDir,
-		// 	"systemUserUID":  sysUser.UID,
-		// 	"systemUserGID":  sysUser.GID,
-		// 	"systemUsername": sysUser.Username,
-		// },
+		SSHPAExtensions: map[string]string{
+			"systemUserHome": sysUser.HomeDir,
+			"systemUserUID":  sysUser.UID,
+			"systemUserGID":  sysUser.GID,
+			"systemUsername": sysUser.Username,
+		},
 	}
 }

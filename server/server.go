@@ -156,6 +156,15 @@ func convertToSSHPersmissions(authCtx *middleware.AuthContext, mwPerms *middlewa
 	if mwPerms == nil { // 理论上, 如果 chainErr 为 nil 且未中止, mwPerms 不应为 nil
 		return nil, fmt.Errorf("authentication failed for user %s (no permissions returned)", authCtx.User)
 	}
-	// 当前, 我们不从 middleware.Permissions 向 ssh.Permissions 传递特定扩展.
-	return &ssh.Permissions{}, nil
+
+	// 总是初始化 Extensions, 即使它是空的, 以匹配某些库可能期望非nil map的行为.
+	sshPerms := &ssh.Permissions{
+		Extensions: make(map[string]string),
+	}
+	if mwPerms.SSHPAExtensions != nil {
+		for k, v := range mwPerms.SSHPAExtensions { // 复制内容
+			sshPerms.Extensions[k] = v
+		}
+	}
+	return sshPerms, nil
 }
