@@ -12,12 +12,11 @@ import (
 	"os"
 	"os/exec"
 	"runtime/debug"
-	"strconv" // 用于 ParseUint
+	"strconv"
 	"sync"
 	"syscall"
 	"unsafe"
 
-	// "os/user" // 在此文件中不再需要, 因为移除了补充组逻辑
 	"github.com/creack/pty"
 	"github.com/pkg/sftp"
 	"golang.org/x/crypto/ssh"

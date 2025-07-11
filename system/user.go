@@ -9,7 +9,6 @@ import (
 	"strings"
 
 	"github.com/go-crypt/crypt"
-	// "github.com/go-crypt/crypt/algorithm" // 使用 CheckPassword 后不再需要特定的错误常量
 )
 
 // SystemUserInfo 保存系统用户的基本信息.

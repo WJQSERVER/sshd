@@ -1,7 +1,7 @@
 package main
 
 import (
-	"bytes" // Import bytes package for key comparison
+	"bytes"
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/x509"
@@ -10,11 +10,11 @@ import (
 	"log"
 	"os"
 	"path/filepath"
-	"sshd/config" // Import the config package
+	"sshd/config"
 	"sshd/server"
-	"sshd/system" // Import the system package
-	"strings"     // For strings.HasPrefix
-	"time"        // For time-based shadow checks
+	"sshd/system"
+	"strings"
+	"time"
 
 	"golang.org/x/crypto/ed25519"
 	"golang.org/x/crypto/ssh"
@@ -260,9 +260,6 @@ func main() {
 		Server:       sshCfg,
 		EnableSftp:   cfg.Server.SftpEnabled,
 		ReadOnlySftp: cfg.Server.SftpReadonly,
-		// UserHomesBaseDir 字段已从 server.SSHServer 结构中移除
-		// HostKey 字段已从 server.SSHServer 中移除, 因为它未被使用.
-		// ssh.ServerConfig (appServer.Server) 已通过 AddHostKey() 包含主机密钥.
 	}
 
 	// 6. 启动服务器
