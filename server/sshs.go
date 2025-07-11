@@ -17,8 +17,7 @@ import (
 	"syscall"
 	"unsafe"
 
-	"os/user" // For LookupId and GroupIds for supplementary groups
-
+	// "os/user" // No longer needed in this file after removing supplementary group logic
 	"github.com/creack/pty"
 	"github.com/pkg/sftp"
 	"golang.org/x/crypto/ssh"
@@ -237,32 +236,9 @@ func (s *SSHServer) handleChannels(sshConn *ssh.ServerConn, chans <-chan ssh.New
 						}
 						cmd.SysProcAttr.Credential = &syscall.Credential{Uid: uint32(uid), Gid: uint32(gid)}
 						log.Printf("为命令 '%s' 设置主凭据 UID=%d, GID=%d (用户: %s)", command, uint32(uid), uint32(gid), requestingUser)
-
-						// Set supplementary groups
-						u, errLookup := user.LookupId(uidStr)
-						if errLookup == nil {
-							groupIdStrings, errGroups := u.GroupIds()
-							if errGroups == nil {
-								var gidsUint32 []uint32
-								for _, gidString := range groupIdStrings {
-									gid64, errConv := strconv.ParseUint(gidString, 10, 32)
-									if errConv == nil {
-										gidsUint32 = append(gidsUint32, uint32(gid64))
-									} else {
-										log.Printf("警告: 无法转换补充组ID '%s' 为 uint32 (用户: %s): %v", gidString, requestingUser, errConv)
-									}
-								}
-								if len(gidsUint32) > 0 {
-									cmd.SysProcAttr.Gids = gidsUint32
-									log.Printf("为命令 '%s' 设置补充组IDs %v (用户: %s)", command, gidsUint32, requestingUser)
-								}
-							} else {
-								log.Printf("警告: 无法获取用户 '%s' (UID: %s) 的补充组: %v", requestingUser, uidStr, errGroups)
-							}
-						} else {
-							log.Printf("警告: 无法通过 UID '%s' 查找用户 '%s' 以获取补充组: %v", uidStr, requestingUser, errLookup)
-						}
-
+						// Supplementary group setting (SysProcAttr.Gids) is currently omitted due to
+						// its non-standard availability in syscall.SysProcAttr across Go versions/environments without CGo.
+						// Future work might re-introduce this with a more robust solution if needed.
 					} else {
 						log.Printf("警告: 无法解析 UID (%s) 或 GID (%s) 为用户 '%s' 执行命令 '%s'. 命令将以 SSHD 进程用户身份运行. UidErr: %v, GidErr: %v",
 							uidStr, gidStr, requestingUser, command, errUid, errGid)
@@ -306,32 +282,8 @@ func (s *SSHServer) handleChannels(sshConn *ssh.ServerConn, chans <-chan ssh.New
 						}
 						cmd.SysProcAttr.Credential = &syscall.Credential{Uid: uint32(uid), Gid: uint32(gid)}
 						log.Printf("为 shell '%s' 设置主凭据 UID=%d, GID=%d (用户: %s)", shell, uint32(uid), uint32(gid), requestingUser)
-
-						// Set supplementary groups for shell
-						u, errLookup := user.LookupId(uidStr)
-						if errLookup == nil {
-							groupIdStrings, errGroups := u.GroupIds()
-							if errGroups == nil {
-								var gidsUint32 []uint32
-								for _, gidString := range groupIdStrings {
-									gid64, errConv := strconv.ParseUint(gidString, 10, 32)
-									if errConv == nil {
-										gidsUint32 = append(gidsUint32, uint32(gid64))
-									} else {
-										log.Printf("警告: 无法转换补充组ID '%s' 为 uint32 (用户: %s): %v", gidString, requestingUser, errConv)
-									}
-								}
-								if len(gidsUint32) > 0 {
-									cmd.SysProcAttr.Gids = gidsUint32
-									log.Printf("为 shell '%s' 设置补充组IDs %v (用户: %s)", shell, gidsUint32, requestingUser)
-								}
-							} else {
-								log.Printf("警告: 无法获取用户 '%s' (UID: %s) 的补充组: %v", requestingUser, uidStr, errGroups)
-							}
-						} else {
-							log.Printf("警告: 无法通过 UID '%s' 查找用户 '%s' 以获取补充组: %v", uidStr, requestingUser, errLookup)
-						}
-						// PtyRun handles Setctty and Setsid
+						// Supplementary group setting (SysProcAttr.Gids) is currently omitted.
+						// PtyRun handles Setctty and Setsid.
 					} else {
 						log.Printf("警告: 无法解析 UID (%s) 或 GID (%s) 为用户 '%s' 启动 shell '%s'. Shell 将以 SSHD 进程用户身份运行. UidErr: %v, GidErr: %v",
 							uidStr, gidStr, requestingUser, shell, errUid, errGid)

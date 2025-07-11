@@ -10,7 +10,7 @@ import (
 	"strings"
 
 	"github.com/go-crypt/crypt"
-	"github.com/go-crypt/crypt/algorithm" // For error types like algorithm.ErrPasswordMismatch
+	// "github.com/go-crypt/crypt/algorithm" // No longer needed for specific error constants with CheckPassword
 )
 
 // SystemUserInfo holds essential information about a system user.
@@ -175,29 +175,23 @@ func parseShadowLine(line string) (*ShadowEntry, error) {
 // from /etc/shadow (which includes the algorithm, salt, and hash).
 // It uses github.com/go-crypt/crypt to verify various crypt(3) style hashes.
 func VerifyPassword(plainPassword, shadowHash string) (bool, error) {
-	// First, create a new Crypter from the existing hash string.
-	// This step decodes the hash string to determine the algorithm and parameters.
-	crypter, err := crypt.New(shadowHash)
+	// crypt.CheckPassword returns (valid bool, err error).
+	// If err is not nil, an error occurred during the check process (e.g., invalid hash format).
+	// If err is nil, valid indicates if the password matched the hash.
+	valid, err := crypt.CheckPassword(plainPassword, shadowHash)
 	if err != nil {
-		// This error occurs if the hash format is not recognized or is malformed.
-		// It could wrap algorithm.ErrAlgorithmInvalid or algorithm.ErrAlgorithmUnavailable.
-		if errors.Is(err, algorithm.ErrAlgorithmInvalid) || errors.Is(err, algorithm.ErrAlgorithmUnavailable) {
-			return false, fmt.Errorf("unsupported or malformed hash algorithm in '%s': %w", shadowHash, err)
-		}
-		return false, fmt.Errorf("failed to create crypter for hash '%s': %w", shadowHash, err)
+		// An error occurred in the crypt.CheckPassword process itself (e.g., malformed hash string,
+		// unsupported algorithm not caught by simple prefix checks if any were done, etc.)
+		// It does NOT mean a password mismatch here. For mismatch, err is nil and valid is false.
+		return false, fmt.Errorf("password check process failed for hash '%s': %w", shadowHash, err)
 	}
 
-	// Now, verify the plain password against the parsed hash.
-	err = crypter.Verify([]byte(plainPassword))
-	if err == nil {
-		return true, nil // Password matches
+	// If err is nil, 'valid' holds the result of the password comparison.
+	if !valid {
+		// This is a password mismatch. Return false (not a match) and nil error (process was fine).
+		return false, nil
 	}
 
-	// Check if the error is specifically a password mismatch.
-	if errors.Is(err, algorithm.ErrPasswordMismatch) {
-		return false, nil // Password does not match
-	}
-
-	// Any other error is an unexpected issue during the verification step itself.
-	return false, fmt.Errorf("password verification process failed for hash '%s': %w", shadowHash, err)
+	// Password matches
+	return true, nil
 }
