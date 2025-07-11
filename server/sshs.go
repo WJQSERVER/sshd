@@ -383,6 +383,7 @@ func (s *SSHServer) startSftp(channel ssh.Channel, userHome string, requestingUs
 
 	serverOptions := []sftp.ServerOption{
 		// sftp.WithDebug(os.Stderr), // 启用 SFTP 调试输出
+		sftp.WithServerWorkingDirectory(userHome), // 将初始工作目录设置为用户主目录
 	}
 
 	if s.ReadOnlySftp {
