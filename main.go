@@ -1,6 +1,7 @@
 package main
 
 import (
+	"flag"
 	"log"
 	"sshd/config"
 	"sshd/server"
@@ -10,6 +11,10 @@ const (
 	defaultHostKeyFileRSA     = "host_rsa.key"
 	defaultHostKeyFileEd25519 = "host_ed25519.key"
 	configFilePath            = "config/config.toml"
+)
+
+var (
+	configPath string
 )
 
 // EncryptionType 定义支持的加密类型.
@@ -24,16 +29,27 @@ var (
 	cfg *config.Config
 )
 
+func parseFlag() {
+	var configPath string
+	flag.StringVar(&configPath, "c", configFilePath, "指定配置文件的路径")
+	flag.Parse()
+
+	if configPath != "" {
+		configPath = configFilePath
+	}
+}
+
 func loadConfig() {
 	var err error
-	cfg, err = config.LoadConfig(configFilePath)
+	cfg, err = config.LoadConfig(configPath)
 	if err != nil {
 		// 如果配置加载失败, 这是致命错误, 程序无法继续.
-		log.Fatalf("无法加载配置文件 '%s': %v", configFilePath, err)
+		log.Fatalf("无法加载配置文件 '%s': %v", configPath, err)
 	}
 }
 
 func init() {
+	parseFlag()
 	loadConfig()
 }
 
